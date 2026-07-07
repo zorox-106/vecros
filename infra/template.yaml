@@ -19,8 +19,6 @@ Globals:
         BUCKET_NAME: !Ref InspectionImagesBucket
         PRESIGNED_URL_EXPIRY_SECONDS: "3600"
         AWS_REGION_NAME: !Ref AWS::Region
-    # All functions share the single least-privilege execution role
-    Role: !GetAtt LambdaExecutionRole.Arn
 
 # ---------------------------------------------------------------------------
 # Parameters
@@ -185,6 +183,7 @@ Resources:
       FunctionName: !Sub "vecros-create-inspection-${Stage}"
       CodeUri: ../lambdas/create_inspection/
       Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
       Layers:
         - !Ref SharedLayer
       Events:
@@ -202,6 +201,7 @@ Resources:
       FunctionName: !Sub "vecros-list-by-warehouse-${Stage}"
       CodeUri: ../lambdas/list_by_warehouse/
       Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
       Layers:
         - !Ref SharedLayer
       Events:
@@ -219,6 +219,7 @@ Resources:
       FunctionName: !Sub "vecros-list-by-drone-${Stage}"
       CodeUri: ../lambdas/list_by_drone/
       Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
       Layers:
         - !Ref SharedLayer
       Events:
@@ -236,6 +237,7 @@ Resources:
       FunctionName: !Sub "vecros-generate-presigned-url-${Stage}"
       CodeUri: ../lambdas/generate_presigned_url/
       Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
       Layers:
         - !Ref SharedLayer
       Events:
@@ -253,6 +255,7 @@ Resources:
       FunctionName: !Sub "vecros-list-images-${Stage}"
       CodeUri: ../lambdas/list_images/
       Handler: handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
       Layers:
         - !Ref SharedLayer
       Events:
@@ -270,7 +273,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub "vecros-shared-layer-${Stage}"
-      ContentUri: ../shared/
+      ContentUri: ../shared_layer/
       CompatibleRuntimes:
         - python3.9
       RetentionPolicy: Delete
