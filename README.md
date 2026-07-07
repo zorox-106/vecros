@@ -2,6 +2,12 @@
 
 A serverless backend built on **AWS Lambda + API Gateway + DynamoDB + S3** that manages drone-based warehouse inspections.
 
+> [!NOTE]
+> **Live Deployed API Base URL (Region: eu-north-1):**
+> - **API Gateway Endpoints:** `https://4nonq48d5c.execute-api.eu-north-1.amazonaws.com/dev`
+> - **DynamoDB Table:** `DroneInspectionTable-dev`
+> - **S3 Image Storage Bucket:** `vecros-inspection-images-dev-351947424692`
+
 ---
 
 ## Architecture
