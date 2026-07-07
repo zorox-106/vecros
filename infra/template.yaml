@@ -1,0 +1,302 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  Vecros Drone Inspection Service
+  Serverless backend — API Gateway + Lambda + DynamoDB + S3
+
+# ---------------------------------------------------------------------------
+# Global defaults applied to every Lambda function
+# ---------------------------------------------------------------------------
+Globals:
+  Function:
+    Runtime: python3.9
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref DroneInspectionTable
+        BUCKET_NAME: !Ref InspectionImagesBucket
+        PRESIGNED_URL_EXPIRY_SECONDS: "3600"
+        AWS_REGION_NAME: !Ref AWS::Region
+    # All functions share the single least-privilege execution role
+    Role: !GetAtt LambdaExecutionRole.Arn
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment stage / environment name
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # -------------------------------------------------------------------------
+  # IAM — single least-privilege execution role (no hardcoded credentials)
+  # -------------------------------------------------------------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "vecros-drone-inspection-lambda-role-${Stage}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # CloudWatch Logs — required for Lambda logging
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt DroneInspectionTable.Arn
+                  # Grant access to all GSIs on the table
+                  - !Sub "${DroneInspectionTable.Arn}/index/*"
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt InspectionImagesBucket.Arn
+                  - !Sub "${InspectionImagesBucket.Arn}/*"
+
+  # -------------------------------------------------------------------------
+  # DynamoDB — single-table design
+  # -------------------------------------------------------------------------
+  DroneInspectionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "DroneInspectionTable-${Stage}"
+      BillingMode: PAY_PER_REQUEST   # on-demand — no capacity planning needed
+      # Primary key
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        # GSI-1 attributes
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        # GSI-2 attributes
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      # GSI-1: list inspections/drones by warehouse
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # GSI-2: list inspections by drone
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true   # encryption at rest
+
+  # -------------------------------------------------------------------------
+  # S3 — private bucket for inspection images
+  # -------------------------------------------------------------------------
+  InspectionImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "vecros-inspection-images-${Stage}-${AWS::AccountId}"
+      # Block all public access — images accessed via pre-signed URLs only
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedOrigins: ["*"]   # tighten to your frontend domain in prod
+            MaxAge: 3600
+
+  # -------------------------------------------------------------------------
+  # API Gateway — single REST API
+  # -------------------------------------------------------------------------
+  DroneInspectionApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "vecros-drone-inspection-api-${Stage}"
+      StageName: !Ref Stage
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+
+  # -------------------------------------------------------------------------
+  # Lambda Functions
+  # -------------------------------------------------------------------------
+
+  # 1. Create Inspection
+  CreateInspectionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "vecros-create-inspection-${Stage}"
+      CodeUri: ../lambdas/create_inspection/
+      Handler: handler.lambda_handler
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        CreateInspection:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DroneInspectionApi
+            Path: /inspections
+            Method: POST
+
+  # 2. List Inspections by Warehouse
+  ListByWarehouseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "vecros-list-by-warehouse-${Stage}"
+      CodeUri: ../lambdas/list_by_warehouse/
+      Handler: handler.lambda_handler
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        ListByWarehouse:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DroneInspectionApi
+            Path: /warehouses/{warehouse_id}/inspections
+            Method: GET
+
+  # 3. List Inspections by Drone
+  ListByDroneFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "vecros-list-by-drone-${Stage}"
+      CodeUri: ../lambdas/list_by_drone/
+      Handler: handler.lambda_handler
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        ListByDrone:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DroneInspectionApi
+            Path: /drones/{drone_id}/inspections
+            Method: GET
+
+  # 4. Generate Pre-signed Upload URL
+  GeneratePresignedUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "vecros-generate-presigned-url-${Stage}"
+      CodeUri: ../lambdas/generate_presigned_url/
+      Handler: handler.lambda_handler
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        GeneratePresignedUrl:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DroneInspectionApi
+            Path: /inspections/{inspection_id}/images/upload
+            Method: POST
+
+  # 5. List Images for Inspection
+  ListImagesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "vecros-list-images-${Stage}"
+      CodeUri: ../lambdas/list_images/
+      Handler: handler.lambda_handler
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        ListImages:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DroneInspectionApi
+            Path: /inspections/{inspection_id}/images
+            Method: GET
+
+  # -------------------------------------------------------------------------
+  # Lambda Layer — shared utilities (db.py, s3.py, response.py, validators.py)
+  # -------------------------------------------------------------------------
+  SharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "vecros-shared-layer-${Stage}"
+      ContentUri: ../shared/
+      CompatibleRuntimes:
+        - python3.9
+      RetentionPolicy: Delete
+
+# ---------------------------------------------------------------------------
+# Outputs — printed after `sam deploy`
+# ---------------------------------------------------------------------------
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL of the deployed API
+    Value: !Sub "https://${DroneInspectionApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+    Export:
+      Name: !Sub "VecrosApiBaseUrl-${Stage}"
+
+  DynamoDBTableName:
+    Description: Name of the DynamoDB table
+    Value: !Ref DroneInspectionTable
+    Export:
+      Name: !Sub "VecrosDynamoDBTable-${Stage}"
+
+  S3BucketName:
+    Description: Name of the S3 images bucket
+    Value: !Ref InspectionImagesBucket
+    Export:
+      Name: !Sub "VecrosImagesBucket-${Stage}"
+
+  LambdaRoleArn:
+    Description: ARN of the shared Lambda execution role
+    Value: !GetAtt LambdaExecutionRole.Arn
